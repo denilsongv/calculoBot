@@ -14,7 +14,6 @@ SCOPES = [
 ]
 
 
-@st.cache_resource
 def conectar_google_sheets():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -81,7 +80,6 @@ def limpar_formulario():
     st.session_state["ultimo_resultado"] = None
 
 
-@st.cache_data(ttl=60)
 def carregar_configuracoes():
     try:
         planilha = conectar_google_sheets()
@@ -144,9 +142,16 @@ def garantir_aba(planilha, nome_aba, colunas):
 
 def ler_aba_dataframe(planilha, nome_aba, colunas=None):
     try:
-        aba = planilha.worksheet(nome_aba)
+        planilha_atual = conectar_google_sheets()
+        if not planilha_atual:
+            if colunas is not None:
+                return pd.DataFrame(columns=colunas)
+            return pd.DataFrame()
+
+        aba = planilha_atual.worksheet(nome_aba)
         registros = aba.get_all_records()
         return pd.DataFrame(registros)
+
     except Exception:
         if colunas is not None:
             return pd.DataFrame(columns=colunas)
@@ -155,10 +160,15 @@ def ler_aba_dataframe(planilha, nome_aba, colunas=None):
 
 def salvar_em_aba(planilha, nome_aba, dados, colunas):
     try:
-        aba = garantir_aba(planilha, nome_aba, colunas)
+        planilha_atual = conectar_google_sheets()
+        if not planilha_atual:
+            return False
+
+        aba = garantir_aba(planilha_atual, nome_aba, colunas)
         nova_linha = [dados.get(col, "") for col in colunas]
         aba.append_row(nova_linha)
         return True
+
     except Exception:
         st.error(f"Erro ao salvar em '{nome_aba}':\n{traceback.format_exc()}")
         return False
@@ -300,6 +310,7 @@ def gerar_pdf_orcamento(dados):
             pdf.drawString(50, y, linha)
             y -= 16
             linha = palavra
+
     if linha:
         pdf.drawString(50, y, linha)
 
@@ -317,6 +328,7 @@ if config_precos is None:
 
 if "ultimo_resultado" not in st.session_state:
     st.session_state["ultimo_resultado"] = None
+
 
 st.title("🤖 Calculadora de Custos para Chat Bot")
 st.markdown("---")
@@ -489,7 +501,6 @@ if calcular:
                 "resultado": resultado,
                 "pdf": gerar_pdf_orcamento(dados_pdf)
             }
-
 
 if st.session_state["ultimo_resultado"] is not None:
     ult = st.session_state["ultimo_resultado"]
