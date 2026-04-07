@@ -377,10 +377,11 @@ with col_btn2:
     novo = st.button("🧹 NOVO ORÇAMENTO", use_container_width=True)
 
 with col_btn2:
-    st.button(
+    novo = st.button(
         "🧹 NOVO ORÇAMENTO",
         use_container_width=True,
         on_click=limpar_formulario
+    )
 
 if calcular:
     if not nome_cliente.strip() or not nome_revendedor.strip():
