@@ -8,34 +8,12 @@ from reportlab.lib.pagesizes import A4
 import traceback
 
 
-# =========================================================
-# CONFIGURAÇÕES GERAIS
-# =========================================================
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
-SPREADSHEET_ID = "1QWH5ymxydGafl76tdvK5Uu_F5J0y5Tj2zXl0EEeYDpg"
-ABA_HISTORICO = "historico_orcamentos"
-ABA_ORCAMENTOS = "orcamentos_revendedor"
 
-COLUNAS_HISTORICO = [
-    "data", "codigo", "nome_cliente", "nome_revendedor", "conexoes", "usuarios",
-    "instagram", "facebook", "telegram", "meta",
-    "custo_base", "custo_revendedor", "implantacao", "redes_sociais", "valor_cliente"
-]
-
-COLUNAS_ORCAMENTOS = [
-    "codigo", "data_emissao", "data_validade", "nome_cliente", "nome_revendedor",
-    "conexoes", "usuarios", "valor_revendedor", "sugestao_final",
-    "valor_implantacao", "redes_sociais", "meta"
-]
-
-
-# =========================================================
-# GOOGLE SHEETS
-# =========================================================
 def conectar_google_sheets():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -43,12 +21,14 @@ def conectar_google_sheets():
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
+        spreadsheet_id = "1QWH5ymxydGafl76tdvK5Uu_F5J0y5Tj2zXl0EEeYDpg"
+
         client = gspread.service_account_from_dict(
             creds_dict,
             scopes=SCOPES
         )
 
-        planilha = client.open_by_key(SPREADSHEET_ID)
+        planilha = client.open_by_key(spreadsheet_id)
         return planilha
 
     except Exception:
@@ -57,117 +37,54 @@ def conectar_google_sheets():
         return None
 
 
-def garantir_aba(planilha, nome_aba, colunas):
-    try:
-        aba = planilha.worksheet(nome_aba)
-    except Exception:
-        aba = planilha.add_worksheet(
-            title=nome_aba,
-            rows=1000,
-            cols=max(20, len(colunas))
-        )
+def para_float(valor):
+    if pd.isna(valor):
+        return 0.0
+    if isinstance(valor, (int, float)):
+        return float(valor)
 
-    valores = aba.get_all_values()
-    if not valores:
-        aba.update("A1", [colunas])
+    valor = str(valor).strip()
+    valor = valor.replace("R$", "").replace(" ", "")
+
+    if "," in valor and "." in valor:
+        valor = valor.replace(".", "").replace(",", ".")
     else:
-        cabecalho = valores[0]
-        if cabecalho != colunas:
-            # Garante que a linha 1 fique com o cabeçalho esperado.
-            aba.update("A1", [colunas])
+        valor = valor.replace(",", ".")
 
-    return aba
+    return float(valor)
 
 
-def ler_aba_dataframe(nome_aba, colunas=None):
-    try:
-        planilha = conectar_google_sheets()
-        if not planilha:
-            return pd.DataFrame(columns=colunas or [])
-
-        aba = garantir_aba(planilha, nome_aba, colunas or [])
-        registros = aba.get_all_records()
-
-        if not registros:
-            return pd.DataFrame(columns=colunas or [])
-
-        df = pd.DataFrame(registros)
-
-        if colunas:
-            for coluna in colunas:
-                if coluna not in df.columns:
-                    df[coluna] = ""
-            df = df[colunas]
-
-        return df
-
-    except Exception:
-        st.error(f"Erro ao ler aba '{nome_aba}':\n{traceback.format_exc()}")
-        return pd.DataFrame(columns=colunas or [])
+def para_int(valor):
+    return int(float(para_float(valor)))
 
 
-def salvar_em_aba(nome_aba, dados, colunas):
-    try:
-        planilha = conectar_google_sheets()
-        if not planilha:
-            return False
-
-        aba = garantir_aba(planilha, nome_aba, colunas)
-        nova_linha = [dados.get(col, "") for col in colunas]
-        aba.append_row(nova_linha, value_input_option="USER_ENTERED")
-        return True
-
-    except Exception:
-        st.error(f"Erro ao salvar em '{nome_aba}':\n{traceback.format_exc()}")
-        return False
+def formatar_moeda(valor):
+    texto = f"{float(valor):,.2f}"
+    texto = texto.replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {texto}"
 
 
-def atualizar_linha_orcamento(codigo, dados, colunas):
-    try:
-        planilha = conectar_google_sheets()
-        if not planilha:
-            return False
+def gerar_codigo_orcamento():
+    return f"ORC-{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-        aba = garantir_aba(planilha, ABA_ORCAMENTOS, colunas)
-        registros = aba.get_all_values()
 
-        if not registros:
-            st.error("A aba de orçamentos está vazia.")
-            return False
-
-        cabecalho = registros[0]
-        if "codigo" not in cabecalho:
-            st.error("A coluna 'codigo' não foi encontrada na aba de orçamentos.")
-            return False
-
-        idx_codigo = cabecalho.index("codigo")
-        linha_encontrada = None
-
-        for numero_linha, linha in enumerate(registros[1:], start=2):
-            if len(linha) > idx_codigo and str(linha[idx_codigo]).strip() == str(codigo).strip():
-                linha_encontrada = numero_linha
-                break
-
-        if linha_encontrada is None:
-            st.error("Orçamento não encontrado para atualização.")
-            return False
-
-        nova_linha = [dados.get(col, "") for col in colunas]
-        fim_coluna = chr(ord("A") + len(colunas) - 1)
-        intervalo = f"A{linha_encontrada}:{fim_coluna}{linha_encontrada}"
-        aba.update(intervalo, [nova_linha], value_input_option="USER_ENTERED")
-        return True
-
-    except Exception:
-        st.error(f"Erro ao atualizar orçamento:\n{traceback.format_exc()}")
-        return False
+def limpar_formulario():
+    st.session_state["nome_cliente"] = ""
+    st.session_state["nome_revendedor"] = ""
+    st.session_state["conexoes"] = 1
+    st.session_state["usuarios"] = 1
+    st.session_state["instagram"] = False
+    st.session_state["facebook"] = False
+    st.session_state["telegram"] = False
+    st.session_state["meta"] = False
+    st.session_state["ultimo_resultado"] = None
 
 
 def carregar_configuracoes():
     try:
         planilha = conectar_google_sheets()
         if not planilha:
-            return None, None
+            return None, None, None
 
         aba_precos = planilha.worksheet("config_precos")
         linhas_precos = aba_precos.get_all_values()
@@ -198,78 +115,112 @@ def carregar_configuracoes():
                     }
                 )
 
-        return config_precos, faixas_implantacao
+        return config_precos, faixas_implantacao, planilha
 
     except Exception:
         erro_completo = traceback.format_exc()
         st.error(f"Erro ao carregar configurações:\n{erro_completo}")
-        return None, None
+        return None, None, None
 
 
-# =========================================================
-# FUNÇÕES AUXILIARES
-# =========================================================
-def para_float(valor):
-    if pd.isna(valor):
-        return 0.0
-    if isinstance(valor, (int, float)):
-        return float(valor)
-
-    valor = str(valor).strip()
-    valor = valor.replace("R$", "").replace(" ", "")
-
-    if "," in valor and "." in valor:
-        valor = valor.replace(".", "").replace(",", ".")
-    else:
-        valor = valor.replace(",", ".")
-
-    if valor == "":
-        return 0.0
-
-    return float(valor)
+def garantir_aba(planilha, nome_aba, colunas):
+    try:
+        aba = planilha.worksheet(nome_aba)
+        valores = aba.get_all_values()
+        if not valores:
+            aba.update("A1", [colunas])
+        return aba
+    except Exception:
+        aba = planilha.add_worksheet(
+            title=nome_aba,
+            rows=1000,
+            cols=max(20, len(colunas))
+        )
+        aba.update("A1", [colunas])
+        return aba
 
 
-def para_int(valor):
-    return int(float(para_float(valor)))
+def ler_aba_dataframe(planilha, nome_aba, colunas=None):
+    try:
+        planilha_atual = conectar_google_sheets()
+        if not planilha_atual:
+            if colunas is not None:
+                return pd.DataFrame(columns=colunas)
+            return pd.DataFrame()
+
+        aba = planilha_atual.worksheet(nome_aba)
+        registros = aba.get_all_records()
+        return pd.DataFrame(registros)
+
+    except Exception:
+        if colunas is not None:
+            return pd.DataFrame(columns=colunas)
+        return pd.DataFrame()
 
 
-def formatar_moeda(valor):
-    texto = f"{float(valor):,.2f}"
-    texto = texto.replace(",", "X").replace(".", ",").replace("X", ".")
-    return f"R$ {texto}"
+def salvar_em_aba(planilha, nome_aba, dados, colunas):
+    try:
+        planilha_atual = conectar_google_sheets()
+        if not planilha_atual:
+            return False
+
+        aba = garantir_aba(planilha_atual, nome_aba, colunas)
+        nova_linha = [dados.get(col, "") for col in colunas]
+        aba.append_row(nova_linha)
+        return True
+
+    except Exception:
+        st.error(f"Erro ao salvar em '{nome_aba}':\n{traceback.format_exc()}")
+        return False
 
 
-def gerar_codigo_orcamento():
-    return f"ORC-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+def atualizar_linha_orcamento(planilha, nome_aba, codigo, dados, colunas):
+    try:
+        aba = planilha.worksheet(nome_aba)
+        registros = aba.get_all_values()
+
+        if not registros:
+            st.error("A aba está vazia.")
+            return False
+
+        cabecalho = registros[0]
+
+        if "codigo" not in cabecalho:
+            st.error("A coluna 'codigo' não foi encontrada.")
+            return False
+
+        idx_codigo = cabecalho.index("codigo")
+
+        linha_encontrada = None
+        for i, linha in enumerate(registros[1:], start=2):
+            if len(linha) > idx_codigo and linha[idx_codigo] == codigo:
+                linha_encontrada = i
+                break
+
+        if linha_encontrada is None:
+            st.error("Orçamento não encontrado.")
+            return False
+
+        nova_linha = [dados.get(col, "") for col in colunas]
+
+        intervalo = f"A{linha_encontrada}"
+        aba.update(intervalo, [nova_linha])
+
+        return True
+
+    except Exception as e:
+        st.error(f"Erro ao atualizar orçamento: {e}")
+        return False
 
 
-def limpar_formulario():
-    st.session_state["nome_cliente"] = ""
-    st.session_state["nome_revendedor"] = ""
-    st.session_state["conexoes"] = 1
-    st.session_state["usuarios"] = 1
-    st.session_state["instagram"] = False
-    st.session_state["facebook"] = False
-    st.session_state["telegram"] = False
-    st.session_state["meta"] = False
-    st.session_state["ultimo_resultado"] = None
-    st.session_state["modo_edicao"] = False
-    st.session_state["codigo_em_edicao"] = None
 
 
-def carregar_orcamento_para_edicao(item):
-    st.session_state["modo_edicao"] = True
-    st.session_state["codigo_em_edicao"] = str(item.get("codigo", ""))
-    st.session_state["nome_cliente"] = str(item.get("nome_cliente", ""))
-    st.session_state["nome_revendedor"] = str(item.get("nome_revendedor", ""))
-    st.session_state["conexoes"] = max(1, para_int(item.get("conexoes", 1)))
-    st.session_state["usuarios"] = max(1, para_int(item.get("usuarios", 1)))
-    st.session_state["ultimo_resultado"] = None
 
 
-# =========================================================
-# CÁLCULO
-# =========================================================
+
+
+
+
 def calcular_custo(conexoes, usuarios, redes, meta, config_precos, faixas_implantacao):
     if conexoes == 1:
         custo_conexoes = config_precos["valor_primeira_conexao"]
@@ -347,26 +298,6 @@ def calcular_custo(conexoes, usuarios, redes, meta, config_precos, faixas_implan
     }
 
 
-def montar_dados_orcamento(codigo, data_emissao_dt, data_validade_dt, nome_cliente, nome_revendedor, conexoes, usuarios, resultado, meta):
-    return {
-        "codigo": codigo,
-        "data_emissao": data_emissao_dt.strftime("%d/%m/%Y"),
-        "data_validade": data_validade_dt.strftime("%d/%m/%Y"),
-        "nome_cliente": nome_cliente,
-        "nome_revendedor": nome_revendedor,
-        "conexoes": conexoes,
-        "usuarios": usuarios,
-        "valor_revendedor": formatar_moeda(resultado["custo_revendedor"]),
-        "sugestao_final": formatar_moeda(resultado["valor_cliente"]),
-        "valor_implantacao": formatar_moeda(resultado["implantacao"]),
-        "redes_sociais": formatar_moeda(resultado["redes_sociais"]),
-        "meta": "Sim" if meta else "Não"
-    }
-
-
-# =========================================================
-# PDF
-# =========================================================
 def gerar_pdf_orcamento(dados):
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
@@ -436,11 +367,8 @@ def gerar_pdf_orcamento(dados):
     return buffer
 
 
-# =========================================================
-# CARREGAMENTO INICIAL
-# =========================================================
 with st.spinner("Conectando ao Google Sheets..."):
-    config_precos, faixas_implantacao = carregar_configuracoes()
+    config_precos, faixas_implantacao, planilha = carregar_configuracoes()
 
 if config_precos is None:
     st.stop()
@@ -448,21 +376,9 @@ if config_precos is None:
 if "ultimo_resultado" not in st.session_state:
     st.session_state["ultimo_resultado"] = None
 
-if "modo_edicao" not in st.session_state:
-    st.session_state["modo_edicao"] = False
 
-if "codigo_em_edicao" not in st.session_state:
-    st.session_state["codigo_em_edicao"] = None
-
-
-# =========================================================
-# INTERFACE PRINCIPAL
-# =========================================================
 st.title("🤖 Calculadora de Custos para Chat Bot")
 st.markdown("---")
-
-if st.session_state.get("modo_edicao", False):
-    st.warning(f"Editando orçamento: {st.session_state.get('codigo_em_edicao')}")
 
 st.subheader("🧾 Dados do orçamento")
 
@@ -509,7 +425,7 @@ with col_r4:
 
 st.markdown("---")
 
-col_btn1, col_btn2, col_btn3 = st.columns(3)
+col_btn1, col_btn2 = st.columns(2)
 
 with col_btn1:
     calcular = st.button(
@@ -527,30 +443,8 @@ with col_btn2:
         key="btn_novo_orcamento"
     )
 
-with col_btn3:
-    salvar_alteracao = False
-    if st.session_state.get("modo_edicao", False):
-        salvar_alteracao = st.button(
-            "💾 SALVAR ALTERAÇÃO",
-            use_container_width=True,
-            key="btn_salvar_alteracao"
-        )
-    else:
-        st.button(
-            "💾 SALVAR ALTERAÇÃO",
-            use_container_width=True,
-            disabled=True,
-            key="btn_salvar_alteracao_desabilitado"
-        )
-
-
-# =========================================================
-# CRIAR NOVO ORÇAMENTO
-# =========================================================
 if calcular:
-    if st.session_state.get("modo_edicao", False):
-        st.info("Você está em modo de edição. Use o botão 'SALVAR ALTERAÇÃO' ou clique em 'NOVO ORÇAMENTO'.")
-    elif not nome_cliente.strip() or not nome_revendedor.strip():
+    if not nome_cliente.strip() or not nome_revendedor.strip():
         st.error("Preencha o nome do cliente e o nome do revendedor.")
     else:
         redes = {
@@ -572,6 +466,12 @@ if calcular:
         data_validade_dt = data_emissao_dt + timedelta(days=10)
         codigo_orcamento = gerar_codigo_orcamento()
 
+        colunas_historico = [
+            "data", "codigo", "nome_cliente", "nome_revendedor", "conexoes", "usuarios",
+            "instagram", "facebook", "telegram", "meta",
+            "custo_base", "custo_revendedor", "implantacao", "redes_sociais", "valor_cliente"
+        ]
+
         dados_historico = {
             "data": data_emissao_dt.strftime("%Y-%m-%d %H:%M:%S"),
             "codigo": codigo_orcamento,
@@ -590,22 +490,53 @@ if calcular:
             "valor_cliente": resultado["valor_cliente"]
         }
 
-        dados_orc = montar_dados_orcamento(
-            codigo_orcamento,
-            data_emissao_dt,
-            data_validade_dt,
-            nome_cliente,
-            nome_revendedor,
-            conexoes,
-            usuarios,
-            resultado,
-            meta
+        salvou_historico = salvar_em_aba(
+            planilha,
+            "historico_orcamentos",
+            dados_historico,
+            colunas_historico
         )
 
-        salvou_historico = salvar_em_aba(ABA_HISTORICO, dados_historico, COLUNAS_HISTORICO)
-        salvou_orc = salvar_em_aba(ABA_ORCAMENTOS, dados_orc, COLUNAS_ORCAMENTOS)
+        colunas_orc = [
+            "codigo", "data_emissao", "data_validade", "nome_cliente", "nome_revendedor",
+            "conexoes", "usuarios", "valor_revendedor", "sugestao_final",
+            "valor_implantacao", "redes_sociais", "meta"
+        ]
 
-        dados_pdf = dict(dados_orc)
+        dados_orc = {
+            "codigo": codigo_orcamento,
+            "data_emissao": data_emissao_dt.strftime("%d/%m/%Y"),
+            "data_validade": data_validade_dt.strftime("%d/%m/%Y"),
+            "nome_cliente": nome_cliente,
+            "nome_revendedor": nome_revendedor,
+            "conexoes": conexoes,
+            "usuarios": usuarios,
+            "valor_revendedor": formatar_moeda(resultado["custo_revendedor"]),
+            "sugestao_final": formatar_moeda(resultado["valor_cliente"]),
+            "valor_implantacao": formatar_moeda(resultado["implantacao"]),
+            "redes_sociais": formatar_moeda(resultado["redes_sociais"]),
+            "meta": "Sim" if meta else "Não"
+        }
+
+        salvou_orc = salvar_em_aba(
+            planilha,
+            "orcamentos_revendedor",
+            dados_orc,
+            colunas_orc
+        )
+
+        dados_pdf = {
+            "codigo": codigo_orcamento,
+            "data_emissao": data_emissao_dt.strftime("%d/%m/%Y"),
+            "data_validade": data_validade_dt.strftime("%d/%m/%Y"),
+            "nome_cliente": nome_cliente,
+            "nome_revendedor": nome_revendedor,
+            "conexoes": conexoes,
+            "usuarios": usuarios,
+            "valor_revendedor": formatar_moeda(resultado["custo_revendedor"]),
+            "sugestao_final": formatar_moeda(resultado["valor_cliente"]),
+            "valor_implantacao": formatar_moeda(resultado["implantacao"]),
+        }
 
         if salvou_historico and salvou_orc:
             st.session_state["ultimo_resultado"] = {
@@ -617,73 +548,12 @@ if calcular:
                 "resultado": resultado,
                 "pdf": gerar_pdf_orcamento(dados_pdf)
             }
-            st.success("Orçamento salvo nas abas de histórico e orçamentos do revendedor.")
 
-
-# =========================================================
-# SALVAR ALTERAÇÃO
-# =========================================================
-if salvar_alteracao:
-    if not nome_cliente.strip() or not nome_revendedor.strip():
-        st.error("Preencha o nome do cliente e o nome do revendedor.")
-    else:
-        redes = {
-            "instagram": instagram,
-            "facebook": facebook,
-            "telegram": telegram
-        }
-
-        resultado = calcular_custo(
-            conexoes=conexoes,
-            usuarios=usuarios,
-            redes=redes,
-            meta=meta,
-            config_precos=config_precos,
-            faixas_implantacao=faixas_implantacao
-        )
-
-        data_emissao_dt = datetime.now()
-        data_validade_dt = data_emissao_dt + timedelta(days=10)
-        codigo = st.session_state.get("codigo_em_edicao")
-
-        dados_orc = montar_dados_orcamento(
-            codigo,
-            data_emissao_dt,
-            data_validade_dt,
-            nome_cliente,
-            nome_revendedor,
-            conexoes,
-            usuarios,
-            resultado,
-            meta
-        )
-
-        sucesso = atualizar_linha_orcamento(codigo, dados_orc, COLUNAS_ORCAMENTOS)
-
-        if sucesso:
-            st.success("Orçamento atualizado com sucesso.")
-            st.session_state["modo_edicao"] = False
-            st.session_state["codigo_em_edicao"] = None
-            st.session_state["ultimo_resultado"] = {
-                "codigo": codigo,
-                "cliente": nome_cliente,
-                "revendedor": nome_revendedor,
-                "emissao": data_emissao_dt.strftime("%d/%m/%Y"),
-                "validade": data_validade_dt.strftime("%d/%m/%Y"),
-                "resultado": resultado,
-                "pdf": gerar_pdf_orcamento(dados_orc)
-            }
-            st.rerun()
-
-
-# =========================================================
-# EXIBIR RESULTADO
-# =========================================================
 if st.session_state["ultimo_resultado"] is not None:
     ult = st.session_state["ultimo_resultado"]
     resultado = ult["resultado"]
 
-    st.success(f"Orçamento {ult['codigo']} gerado/atualizado com sucesso.")
+    st.success(f"Orçamento {ult['codigo']} gerado com sucesso.")
 
     col_res1, col_res2, col_res3 = st.columns(3)
     with col_res1:
@@ -710,10 +580,6 @@ if st.session_state["ultimo_resultado"] is not None:
         mime="application/pdf"
     )
 
-
-# =========================================================
-# CONSULTA E EDIÇÃO DE ORÇAMENTOS
-# =========================================================
 st.markdown("---")
 st.subheader("🔎 Consulta de orçamentos")
 
@@ -723,9 +589,17 @@ with col_f1:
 with col_f2:
     filtro_cliente = st.text_input("Filtrar por cliente")
 
-df_orc = ler_aba_dataframe(ABA_ORCAMENTOS, COLUNAS_ORCAMENTOS)
+df_orc = ler_aba_dataframe(
+    planilha,
+    "orcamentos_revendedor",
+    [
+        "codigo", "data_emissao", "data_validade", "nome_cliente", "nome_revendedor",
+        "conexoes", "usuarios", "valor_revendedor", "sugestao_final",
+        "valor_implantacao", "redes_sociais", "meta"
+    ]
+)
 
-if not df_orc.empty and "codigo" in df_orc.columns:
+if not df_orc.empty:
     df_filtrado = df_orc.copy()
 
     if filtro_revendedor.strip():
@@ -747,32 +621,8 @@ if not df_orc.empty and "codigo" in df_orc.columns:
         ]
 
     st.dataframe(df_filtrado, use_container_width=True)
-
-    st.markdown("### ✏️ Editar orçamento existente")
-
-    codigos_orcamento = df_filtrado["codigo"].dropna().astype(str).tolist()
-
-    if codigos_orcamento:
-        codigo_editar = st.selectbox(
-            "Selecione o orçamento para editar:",
-            codigos_orcamento,
-            key="codigo_editar"
-        )
-
-        if st.button("Carregar orçamento para edição", key="btn_carregar_edicao"):
-            linha = df_orc[df_orc["codigo"].astype(str) == str(codigo_editar)]
-
-            if not linha.empty:
-                item = linha.iloc[0]
-                carregar_orcamento_para_edicao(item)
-                st.success("Orçamento carregado. Altere os campos acima e clique em SALVAR ALTERAÇÃO.")
-                st.rerun()
-            else:
-                st.error("Orçamento não encontrado.")
-    else:
-        st.info("Nenhum orçamento encontrado com os filtros atuais.")
 else:
-    st.info("Ainda não há orçamentos cadastrados para consulta ou edição.")
+    st.info("Ainda não há orçamentos cadastrados.")
 
 st.markdown("---")
 st.caption("Sistema integrado com Google Sheets")
