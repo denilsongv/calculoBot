@@ -174,53 +174,6 @@ def salvar_em_aba(planilha, nome_aba, dados, colunas):
         return False
 
 
-def atualizar_linha_orcamento(planilha, nome_aba, codigo, dados, colunas):
-    try:
-        aba = planilha.worksheet(nome_aba)
-        registros = aba.get_all_values()
-
-        if not registros:
-            st.error("A aba está vazia.")
-            return False
-
-        cabecalho = registros[0]
-
-        if "codigo" not in cabecalho:
-            st.error("A coluna 'codigo' não foi encontrada.")
-            return False
-
-        idx_codigo = cabecalho.index("codigo")
-
-        linha_encontrada = None
-        for i, linha in enumerate(registros[1:], start=2):
-            if len(linha) > idx_codigo and linha[idx_codigo] == codigo:
-                linha_encontrada = i
-                break
-
-        if linha_encontrada is None:
-            st.error("Orçamento não encontrado.")
-            return False
-
-        nova_linha = [dados.get(col, "") for col in colunas]
-
-        intervalo = f"A{linha_encontrada}"
-        aba.update(intervalo, [nova_linha])
-
-        return True
-
-    except Exception as e:
-        st.error(f"Erro ao atualizar orçamento: {e}")
-        return False
-
-
-
-
-
-
-
-
-
-
 def calcular_custo(conexoes, usuarios, redes, meta, config_precos, faixas_implantacao):
     if conexoes == 1:
         custo_conexoes = config_precos["valor_primeira_conexao"]
@@ -520,7 +473,7 @@ if calcular:
 
         salvou_orc = salvar_em_aba(
             planilha,
-            "historico_orcamentos",
+            "orcamentos_revendedor",
             dados_orc,
             colunas_orc
         )
