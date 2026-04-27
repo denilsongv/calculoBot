@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import gspread
-from google.oauth2.service_account import Credentials
 from datetime import datetime, timedelta
 from io import BytesIO
 from reportlab.pdfgen import canvas
@@ -11,11 +10,10 @@ import traceback
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
+    "https://www.googleapis.com/auth/drive",
 ]
 
 
-@st.cache_resource
 def conectar_google_sheets():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -23,13 +21,13 @@ def conectar_google_sheets():
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
-        credentials = Credentials.from_service_account_info(
+        spreadsheet_id = "1QWH5ymxydGafl76tdvK5Uu_F5J0y5Tj2zXl0EEeYDpg"
+
+        client = gspread.service_account_from_dict(
             creds_dict,
             scopes=SCOPES
         )
-        client = gspread.authorize(credentials)
 
-        spreadsheet_id = "1QWH5ymxydGafl76tdvK5Uu_F5J0y5Tj2zXl0EEeYDpg"
         planilha = client.open_by_key(spreadsheet_id)
         return planilha
 
@@ -82,7 +80,6 @@ def limpar_formulario():
     st.session_state["ultimo_resultado"] = None
 
 
-@st.cache_data(ttl=60)
 def carregar_configuracoes():
     try:
         planilha = conectar_google_sheets()
@@ -145,9 +142,16 @@ def garantir_aba(planilha, nome_aba, colunas):
 
 def ler_aba_dataframe(planilha, nome_aba, colunas=None):
     try:
-        aba = planilha.worksheet(nome_aba)
+        planilha_atual = conectar_google_sheets()
+        if not planilha_atual:
+            if colunas is not None:
+                return pd.DataFrame(columns=colunas)
+            return pd.DataFrame()
+
+        aba = planilha_atual.worksheet(nome_aba)
         registros = aba.get_all_records()
         return pd.DataFrame(registros)
+
     except Exception:
         if colunas is not None:
             return pd.DataFrame(columns=colunas)
@@ -156,12 +160,17 @@ def ler_aba_dataframe(planilha, nome_aba, colunas=None):
 
 def salvar_em_aba(planilha, nome_aba, dados, colunas):
     try:
-        aba = garantir_aba(planilha, nome_aba, colunas)
+        planilha_atual = conectar_google_sheets()
+        if not planilha_atual:
+            return False
+
+        aba = garantir_aba(planilha_atual, nome_aba, colunas)
         nova_linha = [dados.get(col, "") for col in colunas]
         aba.append_row(nova_linha)
         return True
-    except Exception as e:
-        st.error(f"Erro ao salvar em '{nome_aba}': {e}")
+
+    except Exception:
+        st.error(f"Erro ao salvar em '{nome_aba}':\n{traceback.format_exc()}")
         return False
 
 
@@ -301,6 +310,7 @@ def gerar_pdf_orcamento(dados):
             pdf.drawString(50, y, linha)
             y -= 16
             linha = palavra
+
     if linha:
         pdf.drawString(50, y, linha)
 
@@ -365,33 +375,25 @@ with col_r3:
     telegram = st.checkbox("💬 Telegram", key="telegram")
 with col_r4:
     meta = st.checkbox("⭐ Meta", key="meta")
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
 
 st.markdown("---")
 
 col_btn1, col_btn2 = st.columns(2)
 
 with col_btn1:
-    calcular = st.button("💰 CALCULAR ORÇAMENTO", type="primary", use_container_width=True)
-
-with col_btn2:
-    novo = st.button("🧹 NOVO ORÇAMENTO", use_container_width=True)
+    calcular = st.button(
+        "💰 CALCULAR ORÇAMENTO",
+        type="primary",
+        use_container_width=True,
+        key="btn_calcular_orcamento"
+    )
 
 with col_btn2:
     st.button(
         "🧹 NOVO ORÇAMENTO",
         use_container_width=True,
-        on_click=limpar_formulario
+        on_click=limpar_formulario,
+        key="btn_novo_orcamento"
     )
 
 if calcular:
@@ -441,7 +443,12 @@ if calcular:
             "valor_cliente": resultado["valor_cliente"]
         }
 
-        salvar_em_aba(planilha, "historico_orcamentos", dados_historico, colunas_historico)
+        salvou_historico = salvar_em_aba(
+            planilha,
+            "historico_orcamentos",
+            dados_historico,
+            colunas_historico
+        )
 
         colunas_orc = [
             "codigo", "data_emissao", "data_validade", "nome_cliente", "nome_revendedor",
@@ -464,7 +471,12 @@ if calcular:
             "meta": "Sim" if meta else "Não"
         }
 
-        salvar_em_aba(planilha, "orcamentos_revendedor", dados_orc, colunas_orc)
+        salvou_orc = salvar_em_aba(
+            planilha,
+            "orcamentos_revendedor",
+            dados_orc,
+            colunas_orc
+        )
 
         dados_pdf = {
             "codigo": codigo_orcamento,
@@ -479,23 +491,16 @@ if calcular:
             "valor_implantacao": formatar_moeda(resultado["implantacao"]),
         }
 
-        st.session_state["ultimo_resultado"] = {
-            "codigo": codigo_orcamento,
-            "cliente": nome_cliente,
-            "revendedor": nome_revendedor,
-            "emissao": data_emissao_dt.strftime("%d/%m/%Y"),
-            "validade": data_validade_dt.strftime("%d/%m/%Y"),
-            "resultado": resultado,
-            "pdf": gerar_pdf_orcamento(dados_pdf)
-        }
-
-
-
-
-
-
-
-
+        if salvou_historico and salvou_orc:
+            st.session_state["ultimo_resultado"] = {
+                "codigo": codigo_orcamento,
+                "cliente": nome_cliente,
+                "revendedor": nome_revendedor,
+                "emissao": data_emissao_dt.strftime("%d/%m/%Y"),
+                "validade": data_validade_dt.strftime("%d/%m/%Y"),
+                "resultado": resultado,
+                "pdf": gerar_pdf_orcamento(dados_pdf)
+            }
 
 if st.session_state["ultimo_resultado"] is not None:
     ult = st.session_state["ultimo_resultado"]
@@ -527,7 +532,6 @@ if st.session_state["ultimo_resultado"] is not None:
         file_name=f"{ult['codigo']}.pdf",
         mime="application/pdf"
     )
-
 
 st.markdown("---")
 st.subheader("🔎 Consulta de orçamentos")
