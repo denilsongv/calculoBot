@@ -1,11 +1,18 @@
 import streamlit as st
 import pandas as pd
 import gspread
+from gspread.utils import rowcol_to_a1
 from datetime import datetime, timedelta
 from io import BytesIO
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 import traceback
+
+
+st.set_page_config(
+    page_title="Calculadora de Orçamentos",
+    layout="wide"
+)
 
 
 SCOPES = [
@@ -14,6 +21,27 @@ SCOPES = [
 ]
 
 
+SPREADSHEET_ID = "1QWH5ymxydGafl76tdvK5Uu_F5J0y5Tj2zXl0EEeYDpg"
+
+
+COLUNAS_HISTORICO = [
+    "data", "codigo", "nome_cliente", "nome_revendedor", "conexoes", "usuarios",
+    "instagram", "facebook", "telegram", "meta",
+    "custo_base", "custo_revendedor", "implantacao", "redes_sociais", "valor_cliente"
+]
+
+
+COLUNAS_ORCAMENTOS = [
+    "codigo", "data_emissao", "data_validade", "nome_cliente", "nome_revendedor",
+    "conexoes", "usuarios", "valor_revendedor", "sugestao_final",
+    "valor_implantacao", "redes_sociais", "meta"
+]
+
+
+# =========================================================
+# CONEXÃO COM GOOGLE SHEETS
+# =========================================================
+
 def conectar_google_sheets():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -21,14 +49,12 @@ def conectar_google_sheets():
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
-        spreadsheet_id = "1QWH5ymxydGafl76tdvK5Uu_F5J0y5Tj2zXl0EEeYDpg"
-
         client = gspread.service_account_from_dict(
             creds_dict,
             scopes=SCOPES
         )
 
-        planilha = client.open_by_key(spreadsheet_id)
+        planilha = client.open_by_key(SPREADSHEET_ID)
         return planilha
 
     except Exception:
@@ -37,25 +63,41 @@ def conectar_google_sheets():
         return None
 
 
+# =========================================================
+# FUNÇÕES AUXILIARES
+# =========================================================
+
 def para_float(valor):
-    if pd.isna(valor):
-        return 0.0
-    if isinstance(valor, (int, float)):
+    try:
+        if pd.isna(valor):
+            return 0.0
+        if isinstance(valor, (int, float)):
+            return float(valor)
+
+        valor = str(valor).strip()
+        valor = valor.replace("R$", "").replace(" ", "")
+
+        if valor == "":
+            return 0.0
+
+        if "," in valor and "." in valor:
+            valor = valor.replace(".", "").replace(",", ".")
+        else:
+            valor = valor.replace(",", ".")
+
         return float(valor)
 
-    valor = str(valor).strip()
-    valor = valor.replace("R$", "").replace(" ", "")
+    except Exception:
+        return 0.0
 
-    if "," in valor and "." in valor:
-        valor = valor.replace(".", "").replace(",", ".")
-    else:
-        valor = valor.replace(",", ".")
-
-    return float(valor)
 
 
 def para_int(valor):
-    return int(float(para_float(valor)))
+    try:
+        return int(float(para_float(valor)))
+    except Exception:
+        return 0
+
 
 
 def formatar_moeda(valor):
@@ -64,8 +106,46 @@ def formatar_moeda(valor):
     return f"R$ {texto}"
 
 
+
 def gerar_codigo_orcamento():
     return f"ORC-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+
+
+def normalizar_bool(valor):
+    texto = str(valor).strip().lower()
+    return texto in ["true", "sim", "1", "yes", "verdadeiro"]
+
+
+
+def recarregar_pagina():
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
+
+
+
+def inicializar_estado():
+    valores_padrao = {
+        "nome_cliente": "",
+        "nome_revendedor": "",
+        "conexoes": 1,
+        "usuarios": 1,
+        "instagram": False,
+        "facebook": False,
+        "telegram": False,
+        "meta": False,
+        "ultimo_resultado": None,
+        "modo_edicao": False,
+        "codigo_edicao": "",
+        "mensagem_sistema": "",
+    }
+
+    for chave, valor in valores_padrao.items():
+        if chave not in st.session_state:
+            st.session_state[chave] = valor
+
 
 
 def limpar_formulario():
@@ -78,7 +158,222 @@ def limpar_formulario():
     st.session_state["telegram"] = False
     st.session_state["meta"] = False
     st.session_state["ultimo_resultado"] = None
+    st.session_state["modo_edicao"] = False
+    st.session_state["codigo_edicao"] = ""
+    st.session_state["mensagem_sistema"] = "Novo orçamento iniciado."
 
+
+# =========================================================
+# LEITURA E ESCRITA DAS ABAS
+# =========================================================
+
+def garantir_aba(planilha, nome_aba, colunas):
+    try:
+        aba = planilha.worksheet(nome_aba)
+    except Exception:
+        aba = planilha.add_worksheet(
+            title=nome_aba,
+            rows=1000,
+            cols=max(20, len(colunas))
+        )
+        aba.update("A1", [colunas])
+        return aba
+
+    valores = aba.get_all_values()
+
+    if not valores:
+        aba.update("A1", [colunas])
+    else:
+        cabecalho_atual = [str(c).strip() for c in valores[0]]
+        cabecalho_esperado = [str(c).strip() for c in colunas]
+
+        if cabecalho_atual[:len(cabecalho_esperado)] != cabecalho_esperado:
+            aba.update("A1", [colunas])
+
+    return aba
+
+
+
+def ler_aba_dataframe(planilha, nome_aba, colunas=None):
+    try:
+        if not planilha:
+            return pd.DataFrame(columns=colunas if colunas else [])
+
+        colunas = colunas if colunas else []
+        aba = garantir_aba(planilha, nome_aba, colunas)
+        valores = aba.get_all_values()
+
+        if len(valores) <= 1:
+            return pd.DataFrame(columns=colunas)
+
+        cabecalho = [str(c).strip() for c in valores[0]]
+        linhas = valores[1:]
+
+        dados = []
+        for linha in linhas:
+            linha_ajustada = linha + [""] * (len(cabecalho) - len(linha))
+            dados.append(linha_ajustada[:len(cabecalho)])
+
+        df = pd.DataFrame(dados, columns=cabecalho)
+
+        if colunas:
+            for col in colunas:
+                if col not in df.columns:
+                    df[col] = ""
+            df = df[colunas]
+
+        df = df.dropna(how="all")
+        df = df[df.astype(str).apply(lambda x: "".join(x).strip(), axis=1) != ""]
+
+        if "codigo" in df.columns:
+            df = df[df["codigo"].astype(str).str.startswith("ORC-", na=False)]
+
+        return df
+
+    except Exception:
+        st.error(f"Erro ao ler a aba '{nome_aba}':\n{traceback.format_exc()}")
+        return pd.DataFrame(columns=colunas if colunas else [])
+
+
+
+def salvar_em_aba(planilha, nome_aba, dados, colunas):
+    try:
+        if not planilha:
+            return False
+
+        aba = garantir_aba(planilha, nome_aba, colunas)
+        nova_linha = [dados.get(col, "") for col in colunas]
+
+        aba.append_row(
+            nova_linha,
+            value_input_option="USER_ENTERED"
+        )
+
+        return True
+
+    except Exception:
+        st.error(f"Erro ao salvar em '{nome_aba}':\n{traceback.format_exc()}")
+        return False
+
+
+
+def atualizar_linha_por_codigo(planilha, nome_aba, codigo, dados, colunas):
+    try:
+        if not planilha:
+            return False
+
+        aba = garantir_aba(planilha, nome_aba, colunas)
+        valores = aba.get_all_values()
+
+        if not valores:
+            st.error(f"A aba '{nome_aba}' está vazia.")
+            return False
+
+        cabecalho = [str(c).strip() for c in valores[0]]
+
+        if "codigo" not in cabecalho:
+            st.error(f"A aba '{nome_aba}' não possui a coluna 'codigo'.")
+            return False
+
+        idx_codigo = cabecalho.index("codigo")
+        nova_linha = [dados.get(col, "") for col in colunas]
+
+        for numero_linha, linha in enumerate(valores[1:], start=2):
+            if len(linha) > idx_codigo and str(linha[idx_codigo]).strip() == str(codigo).strip():
+                celula_inicio = rowcol_to_a1(numero_linha, 1)
+                celula_fim = rowcol_to_a1(numero_linha, len(colunas))
+
+                aba.update(
+                    f"{celula_inicio}:{celula_fim}",
+                    [nova_linha],
+                    value_input_option="USER_ENTERED"
+                )
+
+                return True
+
+        st.error(f"Não encontrei o orçamento {codigo} na aba '{nome_aba}'.")
+        return False
+
+    except Exception:
+        st.error(f"Erro ao atualizar '{nome_aba}':\n{traceback.format_exc()}")
+        return False
+
+
+# =========================================================
+# CARREGAMENTO PARA EDIÇÃO
+# =========================================================
+
+def carregar_orcamento_para_edicao(planilha, codigo):
+    try:
+        df_hist = ler_aba_dataframe(
+            planilha,
+            "historico_orcamentos",
+            COLUNAS_HISTORICO
+        )
+
+        df_hist = df_hist[
+            df_hist["codigo"].astype(str).str.strip() == str(codigo).strip()
+        ]
+
+        if not df_hist.empty:
+            linha = df_hist.iloc[-1]
+
+            st.session_state["nome_cliente"] = str(linha.get("nome_cliente", ""))
+            st.session_state["nome_revendedor"] = str(linha.get("nome_revendedor", ""))
+            st.session_state["conexoes"] = max(1, para_int(linha.get("conexoes", 1)))
+            st.session_state["usuarios"] = max(1, para_int(linha.get("usuarios", 1)))
+            st.session_state["instagram"] = normalizar_bool(linha.get("instagram", False))
+            st.session_state["facebook"] = normalizar_bool(linha.get("facebook", False))
+            st.session_state["telegram"] = normalizar_bool(linha.get("telegram", False))
+            st.session_state["meta"] = normalizar_bool(linha.get("meta", False))
+            st.session_state["modo_edicao"] = True
+            st.session_state["codigo_edicao"] = codigo
+            st.session_state["ultimo_resultado"] = None
+            st.session_state["mensagem_sistema"] = f"Orçamento {codigo} carregado para edição."
+            return
+
+        # Plano B: caso o histórico esteja vazio, tenta carregar pela aba final.
+        # Aqui não dá para recuperar Instagram/Facebook/Telegram separadamente,
+        # porque a aba final guarda apenas o valor total de redes sociais.
+        df_orc = ler_aba_dataframe(
+            planilha,
+            "orcamentos_revendedor",
+            COLUNAS_ORCAMENTOS
+        )
+
+        df_orc = df_orc[
+            df_orc["codigo"].astype(str).str.strip() == str(codigo).strip()
+        ]
+
+        if not df_orc.empty:
+            linha = df_orc.iloc[-1]
+
+            st.session_state["nome_cliente"] = str(linha.get("nome_cliente", ""))
+            st.session_state["nome_revendedor"] = str(linha.get("nome_revendedor", ""))
+            st.session_state["conexoes"] = max(1, para_int(linha.get("conexoes", 1)))
+            st.session_state["usuarios"] = max(1, para_int(linha.get("usuarios", 1)))
+            st.session_state["instagram"] = False
+            st.session_state["facebook"] = False
+            st.session_state["telegram"] = False
+            st.session_state["meta"] = normalizar_bool(linha.get("meta", False))
+            st.session_state["modo_edicao"] = True
+            st.session_state["codigo_edicao"] = codigo
+            st.session_state["ultimo_resultado"] = None
+            st.session_state["mensagem_sistema"] = (
+                f"Orçamento {codigo} carregado para edição. "
+                "Atenção: redes sociais individuais não foram recuperadas porque não estavam no histórico."
+            )
+            return
+
+        st.session_state["mensagem_sistema"] = f"Não encontrei o orçamento {codigo} para edição."
+
+    except Exception:
+        st.session_state["mensagem_sistema"] = f"Erro ao carregar orçamento para edição:\n{traceback.format_exc()}"
+
+
+# =========================================================
+# CONFIGURAÇÕES DE PREÇO
+# =========================================================
 
 def carregar_configuracoes():
     try:
@@ -123,112 +418,9 @@ def carregar_configuracoes():
         return None, None, None
 
 
-
-
-
-
-
-
-
-def garantir_aba(planilha, nome_aba, colunas):
-    try:
-        aba = planilha.worksheet(nome_aba)
-    except Exception:
-        aba = planilha.add_worksheet(
-            title=nome_aba,
-            rows=1000,
-            cols=max(20, len(colunas))
-        )
-        aba.update("A1", [colunas])
-        return aba
-
-    valores = aba.get_all_values()
-
-    if not valores:
-        aba.update("A1", [colunas])
-    else:
-        cabecalho_atual = [str(c).strip() for c in valores[0]]
-        cabecalho_esperado = [str(c).strip() for c in colunas]
-
-        if cabecalho_atual[:len(cabecalho_esperado)] != cabecalho_esperado:
-            aba.update("A1", [colunas])
-
-    return aba
-
-
-def ler_aba_dataframe(planilha, nome_aba, colunas=None):
-    try:
-        if not planilha:
-            return pd.DataFrame(columns=colunas if colunas else [])
-
-        aba = garantir_aba(planilha, nome_aba, colunas if colunas else [])
-        valores = aba.get_all_values()
-
-        if len(valores) <= 1:
-            return pd.DataFrame(columns=colunas if colunas else [])
-
-        cabecalho = [str(c).strip() for c in valores[0]]
-        linhas = valores[1:]
-
-        dados = []
-        for linha in linhas:
-            linha_ajustada = linha + [""] * (len(cabecalho) - len(linha))
-            dados.append(linha_ajustada[:len(cabecalho)])
-
-        df = pd.DataFrame(dados, columns=cabecalho)
-
-        if colunas:
-            for col in colunas:
-                if col not in df.columns:
-                    df[col] = ""
-
-            df = df[colunas]
-
-        if "codigo" in df.columns:
-            df = df[df["codigo"].astype(str).str.startswith("ORC-", na=False)]
-
-        df = df.dropna(how="all")
-        df = df[df.astype(str).apply(lambda x: "".join(x).strip(), axis=1) != ""]
-
-        return df
-
-    except Exception:
-        st.error(f"Erro ao ler a aba '{nome_aba}':\n{traceback.format_exc()}")
-        return pd.DataFrame(columns=colunas if colunas else [])
-
-
-def salvar_em_aba(planilha, nome_aba, dados, colunas):
-    try:
-        if not planilha:
-            return False
-
-        aba = garantir_aba(planilha, nome_aba, colunas)
-
-        nova_linha = [dados.get(col, "") for col in colunas]
-
-        aba.append_row(
-            nova_linha,
-            value_input_option="USER_ENTERED"
-        )
-
-        return True
-
-    except Exception:
-        st.error(f"Erro ao salvar em '{nome_aba}':\n{traceback.format_exc()}")
-        return False
-
-
-
-
-
-
-
-
-
-
-
-
-
+# =========================================================
+# CÁLCULO DO ORÇAMENTO
+# =========================================================
 
 def calcular_custo(conexoes, usuarios, redes, meta, config_precos, faixas_implantacao):
     if conexoes == 1:
@@ -307,6 +499,10 @@ def calcular_custo(conexoes, usuarios, redes, meta, config_precos, faixas_implan
     }
 
 
+# =========================================================
+# PDF
+# =========================================================
+
 def gerar_pdf_orcamento(dados):
     buffer = BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
@@ -373,8 +569,14 @@ def gerar_pdf_orcamento(dados):
     pdf.showPage()
     pdf.save()
     buffer.seek(0)
-    return buffer
+    return buffer.getvalue()
 
+
+# =========================================================
+# INÍCIO DO APP
+# =========================================================
+
+inicializar_estado()
 
 with st.spinner("Conectando ao Google Sheets..."):
     config_precos, faixas_implantacao, planilha = carregar_configuracoes()
@@ -382,12 +584,25 @@ with st.spinner("Conectando ao Google Sheets..."):
 if config_precos is None:
     st.stop()
 
-if "ultimo_resultado" not in st.session_state:
-    st.session_state["ultimo_resultado"] = None
-
 
 st.title("🤖 Calculadora de Custos para Chat Bot")
+
+if st.session_state.get("mensagem_sistema"):
+    mensagem = st.session_state.get("mensagem_sistema")
+
+    if "Erro" in mensagem or "Não encontrei" in mensagem:
+        st.error(mensagem)
+    elif "Atenção" in mensagem:
+        st.warning(mensagem)
+    else:
+        st.success(mensagem)
+
+    st.session_state["mensagem_sistema"] = ""
+
 st.markdown("---")
+
+if st.session_state.get("modo_edicao"):
+    st.warning(f"✏️ Modo edição ativo: {st.session_state.get('codigo_edicao')}")
 
 st.subheader("🧾 Dados do orçamento")
 
@@ -404,7 +619,6 @@ with col1:
     conexoes = st.number_input(
         "Número de conexões (chips):",
         min_value=1,
-        value=1,
         step=1,
         key="conexoes"
     )
@@ -414,7 +628,6 @@ with col2:
     usuarios = st.number_input(
         "Número de usuários:",
         min_value=1,
-        value=1,
         step=1,
         key="usuarios"
     )
@@ -436,9 +649,11 @@ st.markdown("---")
 
 col_btn1, col_btn2 = st.columns(2)
 
+texto_botao_principal = "💾 SALVAR ALTERAÇÕES" if st.session_state.get("modo_edicao") else "💰 CALCULAR ORÇAMENTO"
+
 with col_btn1:
     calcular = st.button(
-        "💰 CALCULAR ORÇAMENTO",
+        texto_botao_principal,
         type="primary",
         use_container_width=True,
         key="btn_calcular_orcamento"
@@ -451,6 +666,19 @@ with col_btn2:
         on_click=limpar_formulario,
         key="btn_novo_orcamento"
     )
+
+if st.session_state.get("modo_edicao"):
+    st.button(
+        "❌ Cancelar edição",
+        use_container_width=True,
+        on_click=limpar_formulario,
+        key="btn_cancelar_edicao"
+    )
+
+
+# =========================================================
+# SALVAR / ATUALIZAR ORÇAMENTO
+# =========================================================
 
 if calcular:
     if not nome_cliente.strip() or not nome_revendedor.strip():
@@ -473,13 +701,16 @@ if calcular:
 
         data_emissao_dt = datetime.now()
         data_validade_dt = data_emissao_dt + timedelta(days=10)
-        codigo_orcamento = gerar_codigo_orcamento()
 
-        colunas_historico = [
-            "data", "codigo", "nome_cliente", "nome_revendedor", "conexoes", "usuarios",
-            "instagram", "facebook", "telegram", "meta",
-            "custo_base", "custo_revendedor", "implantacao", "redes_sociais", "valor_cliente"
-        ]
+        modo_edicao_ativo = bool(
+            st.session_state.get("modo_edicao")
+            and st.session_state.get("codigo_edicao")
+        )
+
+        if modo_edicao_ativo:
+            codigo_orcamento = st.session_state["codigo_edicao"]
+        else:
+            codigo_orcamento = gerar_codigo_orcamento()
 
         dados_historico = {
             "data": data_emissao_dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -499,19 +730,6 @@ if calcular:
             "valor_cliente": resultado["valor_cliente"]
         }
 
-        salvou_historico = salvar_em_aba(
-            planilha,
-            "historico_orcamentos",
-            dados_historico,
-            colunas_historico
-        )
-
-        colunas_orc = [
-            "codigo", "data_emissao", "data_validade", "nome_cliente", "nome_revendedor",
-            "conexoes", "usuarios", "valor_revendedor", "sugestao_final",
-            "valor_implantacao", "redes_sociais", "meta"
-        ]
-
         dados_orc = {
             "codigo": codigo_orcamento,
             "data_emissao": data_emissao_dt.strftime("%d/%m/%Y"),
@@ -527,13 +745,6 @@ if calcular:
             "meta": "Sim" if meta else "Não"
         }
 
-        salvou_orc = salvar_em_aba(
-            planilha,
-            "orcamentos_revendedor",
-            dados_orc,
-            colunas_orc
-        )
-
         dados_pdf = {
             "codigo": codigo_orcamento,
             "data_emissao": data_emissao_dt.strftime("%d/%m/%Y"),
@@ -547,41 +758,69 @@ if calcular:
             "valor_implantacao": formatar_moeda(resultado["implantacao"]),
         }
 
+        if modo_edicao_ativo:
+            salvou_historico = atualizar_linha_por_codigo(
+                planilha,
+                "historico_orcamentos",
+                codigo_orcamento,
+                dados_historico,
+                COLUNAS_HISTORICO
+            )
+
+            salvou_orc = atualizar_linha_por_codigo(
+                planilha,
+                "orcamentos_revendedor",
+                codigo_orcamento,
+                dados_orc,
+                COLUNAS_ORCAMENTOS
+            )
+        else:
+            salvou_historico = salvar_em_aba(
+                planilha,
+                "historico_orcamentos",
+                dados_historico,
+                COLUNAS_HISTORICO
+            )
+
+            salvou_orc = salvar_em_aba(
+                planilha,
+                "orcamentos_revendedor",
+                dados_orc,
+                COLUNAS_ORCAMENTOS
+            )
+
+        if salvou_historico and salvou_orc:
+            acao = "atualizado" if modo_edicao_ativo else "gerado"
+
+            st.session_state["ultimo_resultado"] = {
+                "codigo": codigo_orcamento,
+                "cliente": nome_cliente,
+                "revendedor": nome_revendedor,
+                "emissao": data_emissao_dt.strftime("%d/%m/%Y"),
+                "validade": data_validade_dt.strftime("%d/%m/%Y"),
+                "conexoes": conexoes,
+                "usuarios": usuarios,
+                "resultado": resultado,
+                "pdf": gerar_pdf_orcamento(dados_pdf),
+                "acao": acao,
+            }
+
+            st.session_state["modo_edicao"] = False
+            st.session_state["codigo_edicao"] = ""
+            st.session_state["mensagem_sistema"] = f"Orçamento {codigo_orcamento} {acao} com sucesso."
+
+            recarregar_pagina()
 
 
-
-
-
-
-
-
-
-    if salvou_historico and salvou_orc:
-        st.session_state["ultimo_resultado"] = {
-            "codigo": codigo_orcamento,
-            "cliente": nome_cliente,
-            "revendedor": nome_revendedor,
-            "emissao": data_emissao_dt.strftime("%d/%m/%Y"),
-            "validade": data_validade_dt.strftime("%d/%m/%Y"),
-            "resultado": resultado,
-            "pdf": gerar_pdf_orcamento(dados_pdf)
-    }
-
-    st.rerun()
-
-
-
-
-
-
-
-
+# =========================================================
+# RESULTADO DO ÚLTIMO ORÇAMENTO
+# =========================================================
 
 if st.session_state["ultimo_resultado"] is not None:
     ult = st.session_state["ultimo_resultado"]
     resultado = ult["resultado"]
 
-    st.success(f"Orçamento {ult['codigo']} gerado com sucesso.")
+    st.success(f"Orçamento {ult['codigo']} {ult.get('acao', 'gerado')} com sucesso.")
 
     col_res1, col_res2, col_res3 = st.columns(3)
     with col_res1:
@@ -598,8 +837,8 @@ if st.session_state["ultimo_resultado"] is not None:
     st.write(f"**Revendedor:** {ult['revendedor']}")
     st.write(f"**Data de emissão:** {ult['emissao']}")
     st.write(f"**Validade:** {ult['validade']}")
-    st.write(f"**Conexões:** {st.session_state.get('conexoes', 1)}")
-    st.write(f"**Usuários:** {st.session_state.get('usuarios', 1)}")
+    st.write(f"**Conexões:** {ult.get('conexoes', '')}")
+    st.write(f"**Usuários:** {ult.get('usuarios', '')}")
 
     st.download_button(
         label="📄 Baixar PDF do orçamento",
@@ -608,23 +847,25 @@ if st.session_state["ultimo_resultado"] is not None:
         mime="application/pdf"
     )
 
+
+# =========================================================
+# CONSULTA E EDIÇÃO DE ORÇAMENTOS
+# =========================================================
+
 st.markdown("---")
 st.subheader("🔎 Consulta de orçamentos")
 
 col_f1, col_f2 = st.columns(2)
 with col_f1:
-    filtro_revendedor = st.text_input("Filtrar por revendedor")
+    filtro_revendedor = st.text_input("Filtrar por revendedor", key="filtro_revendedor")
 with col_f2:
-    filtro_cliente = st.text_input("Filtrar por cliente")
+    filtro_cliente = st.text_input("Filtrar por cliente", key="filtro_cliente")
+
 
 df_orc = ler_aba_dataframe(
     planilha,
     "orcamentos_revendedor",
-    [
-        "codigo", "data_emissao", "data_validade", "nome_cliente", "nome_revendedor",
-        "conexoes", "usuarios", "valor_revendedor", "sugestao_final",
-        "valor_implantacao", "redes_sociais", "meta"
-    ]
+    COLUNAS_ORCAMENTOS
 )
 
 if not df_orc.empty:
@@ -648,7 +889,42 @@ if not df_orc.empty:
             )
         ]
 
-    st.dataframe(df_filtrado, use_container_width=True)
+    if not df_filtrado.empty:
+        st.dataframe(df_filtrado, use_container_width=True)
+
+        st.markdown("### ✏️ Editar orçamento existente")
+
+        opcoes_edicao = [""]
+
+        for _, row in df_filtrado.iterrows():
+            codigo = str(row.get("codigo", "")).strip()
+            cliente = str(row.get("nome_cliente", "")).strip()
+            revendedor = str(row.get("nome_revendedor", "")).strip()
+            data_emissao = str(row.get("data_emissao", "")).strip()
+
+            if codigo:
+                opcoes_edicao.append(
+                    f"{codigo} | {cliente} | {revendedor} | {data_emissao}"
+                )
+
+        orcamento_escolhido = st.selectbox(
+            "Selecione um orçamento para editar",
+            opcoes_edicao,
+            key="select_orcamento_edicao"
+        )
+
+        if orcamento_escolhido:
+            codigo_escolhido = orcamento_escolhido.split(" | ")[0].strip()
+
+            st.button(
+                "✏️ Carregar orçamento para edição",
+                use_container_width=True,
+                on_click=carregar_orcamento_para_edicao,
+                args=(planilha, codigo_escolhido),
+                key="btn_carregar_edicao"
+            )
+    else:
+        st.info("Nenhum orçamento encontrado com os filtros informados.")
 else:
     st.info("Ainda não há orçamentos cadastrados.")
 
