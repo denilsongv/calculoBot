@@ -78,6 +78,8 @@ def limpar_formulario():
     st.session_state["telegram"] = False
     st.session_state["meta"] = False
     st.session_state["ultimo_resultado"] = None
+    st.session_state["modo_edicao"] = False
+    st.session_state["codigo_em_edicao"] = None
 
 
 def carregar_configuracoes():
@@ -176,32 +178,11 @@ def salvar_em_aba(planilha, nome_aba, dados, colunas):
 
 def atualizar_linha_orcamento(planilha, nome_aba, codigo, dados, colunas):
     try:
-        aba = planilha.worksheet(nome_aba)
-        registros = aba.get_all_values()
+        planilha_atual = conectar_google_sheets()
+        if not planilha_atual:
+            return False
 
-        cabecalho = registros[0]
-        idx_codigo = cabecalho.index("codigo")
-
-        for i, linha in enumerate(registros[1:], start=2):
-            if linha[idx_codigo] == codigo:
-                nova_linha = [dados.get(col, "") for col in colunas]
-                aba.update(f"A{i}", [nova_linha])
-                return True
-
-        st.error("Orçamento não encontrado.")
-        return False
-
-    except Exception:
-        st.error(traceback.format_exc())
-        return False
-
-
-
-
-
-def atualizar_linha_orcamento(planilha, nome_aba, codigo, dados, colunas):
-    try:
-        aba = planilha.worksheet(nome_aba)
+        aba = planilha_atual.worksheet(nome_aba)
         registros = aba.get_all_values()
 
         if not registros:
@@ -215,10 +196,11 @@ def atualizar_linha_orcamento(planilha, nome_aba, codigo, dados, colunas):
             return False
 
         idx_codigo = cabecalho.index("codigo")
+        codigo = str(codigo).strip()
 
         linha_encontrada = None
         for i, linha in enumerate(registros[1:], start=2):
-            if len(linha) > idx_codigo and linha[idx_codigo] == codigo:
+            if len(linha) > idx_codigo and str(linha[idx_codigo]).strip() == codigo:
                 linha_encontrada = i
                 break
 
@@ -227,23 +209,33 @@ def atualizar_linha_orcamento(planilha, nome_aba, codigo, dados, colunas):
             return False
 
         nova_linha = [dados.get(col, "") for col in colunas]
-
-        intervalo = f"A{linha_encontrada}"
-        aba.update(intervalo, [nova_linha])
+        aba.update(f"A{linha_encontrada}", [nova_linha])
 
         return True
 
-    except Exception as e:
-        st.error(f"Erro ao atualizar orçamento: {e}")
+    except Exception:
+        st.error(f"Erro ao atualizar orçamento:\n{traceback.format_exc()}")
         return False
 
 
+def carregar_orcamento_para_edicao(item):
+    st.session_state["modo_edicao"] = True
+    st.session_state["codigo_em_edicao"] = str(item.get("codigo", ""))
+    st.session_state["nome_cliente"] = str(item.get("nome_cliente", ""))
+    st.session_state["nome_revendedor"] = str(item.get("nome_revendedor", ""))
+    st.session_state["conexoes"] = para_int(item.get("conexoes", 1))
+    st.session_state["usuarios"] = para_int(item.get("usuarios", 1))
 
+    meta_valor = str(item.get("meta", "")).strip().lower()
+    st.session_state["meta"] = meta_valor in ["sim", "true", "1", "yes"]
 
+    # A aba orcamentos_revendedor não guarda quais redes foram marcadas.
+    # Por isso, ao editar, marque novamente Instagram/Facebook/Telegram se necessário.
+    st.session_state["instagram"] = False
+    st.session_state["facebook"] = False
+    st.session_state["telegram"] = False
 
-
-
-
+    st.session_state["ultimo_resultado"] = None
 
 
 def calcular_custo(conexoes, usuarios, redes, meta, config_precos, faixas_implantacao):
@@ -400,13 +392,12 @@ if config_precos is None:
 
 if "ultimo_resultado" not in st.session_state:
     st.session_state["ultimo_resultado"] = None
-    
-    
+
 if "modo_edicao" not in st.session_state:
     st.session_state["modo_edicao"] = False
 
 if "codigo_em_edicao" not in st.session_state:
-    st.session_state["codigo_em_edicao"] = None    
+    st.session_state["codigo_em_edicao"] = None
 
 
 st.title("🤖 Calculadora de Custos para Chat Bot")
@@ -464,7 +455,8 @@ with col_btn1:
         "💰 CALCULAR ORÇAMENTO",
         type="primary",
         use_container_width=True,
-        key="btn_calcular_orcamento"
+        key="btn_calcular_orcamento",
+        disabled=st.session_state.get("modo_edicao", False)
     )
 
 with col_btn2:
@@ -477,10 +469,15 @@ with col_btn2:
 
 with col_btn3:
     salvar_alteracao = False
-    if st.session_state["modo_edicao"]:
-        salvar_alteracao = st.button("💾 SALVAR ALTERAÇÃO")
+    if st.session_state.get("modo_edicao", False):
+        salvar_alteracao = st.button(
+            "💾 SALVAR ALTERAÇÃO",
+            use_container_width=True,
+            key="btn_salvar_alteracao"
+        )
 
-
+if st.session_state.get("modo_edicao", False):
+    st.info(f"Editando orçamento: {st.session_state.get('codigo_em_edicao')}. Faça as alterações e clique em SALVAR ALTERAÇÃO.")
 
 if calcular:
     if not nome_cliente.strip() or not nome_revendedor.strip():
@@ -587,51 +584,87 @@ if calcular:
                 "resultado": resultado,
                 "pdf": gerar_pdf_orcamento(dados_pdf)
             }
-            
-            
+
 if salvar_alteracao:
-    redes = {
-        "instagram": instagram,
-        "facebook": facebook,
-        "telegram": telegram
-    }
+    if not nome_cliente.strip() or not nome_revendedor.strip():
+        st.error("Preencha o nome do cliente e o nome do revendedor.")
+    else:
+        redes = {
+            "instagram": instagram,
+            "facebook": facebook,
+            "telegram": telegram
+        }
 
-    resultado = calcular_custo(
-        conexoes,
-        usuarios,
-        redes,
-        meta,
-        config_precos,
-        faixas_implantacao
-    )
+        resultado = calcular_custo(
+            conexoes=conexoes,
+            usuarios=usuarios,
+            redes=redes,
+            meta=meta,
+            config_precos=config_precos,
+            faixas_implantacao=faixas_implantacao
+        )
 
-    codigo = st.session_state["codigo_em_edicao"]
+        codigo_orcamento = st.session_state.get("codigo_em_edicao")
+        data_emissao_dt = datetime.now()
+        data_validade_dt = data_emissao_dt + timedelta(days=10)
 
-    colunas_orc = [
-        "codigo", "data_emissao", "data_validade", "nome_cliente", "nome_revendedor",
-        "conexoes", "usuarios", "valor_revendedor", "sugestao_final",
-        "valor_implantacao", "redes_sociais", "meta"
-    ]
+        colunas_orc = [
+            "codigo", "data_emissao", "data_validade", "nome_cliente", "nome_revendedor",
+            "conexoes", "usuarios", "valor_revendedor", "sugestao_final",
+            "valor_implantacao", "redes_sociais", "meta"
+        ]
 
-    dados_orc = {
-        "codigo": codigo,
-        "data_emissao": datetime.now().strftime("%d/%m/%Y"),
-        "data_validade": (datetime.now() + timedelta(days=10)).strftime("%d/%m/%Y"),
-        "nome_cliente": nome_cliente,
-        "nome_revendedor": nome_revendedor,
-        "conexoes": conexoes,
-        "usuarios": usuarios,
-        "valor_revendedor": formatar_moeda(resultado["custo_revendedor"]),
-        "sugestao_final": formatar_moeda(resultado["valor_cliente"]),
-        "valor_implantacao": formatar_moeda(resultado["implantacao"]),
-        "redes_sociais": formatar_moeda(resultado["redes_sociais"]),
-        "meta": "Sim" if meta else "Não"
-    }
+        dados_orc = {
+            "codigo": codigo_orcamento,
+            "data_emissao": data_emissao_dt.strftime("%d/%m/%Y"),
+            "data_validade": data_validade_dt.strftime("%d/%m/%Y"),
+            "nome_cliente": nome_cliente,
+            "nome_revendedor": nome_revendedor,
+            "conexoes": conexoes,
+            "usuarios": usuarios,
+            "valor_revendedor": formatar_moeda(resultado["custo_revendedor"]),
+            "sugestao_final": formatar_moeda(resultado["valor_cliente"]),
+            "valor_implantacao": formatar_moeda(resultado["implantacao"]),
+            "redes_sociais": formatar_moeda(resultado["redes_sociais"]),
+            "meta": "Sim" if meta else "Não"
+        }
 
-    if atualizar_linha_orcamento(planilha, "orcamentos_revendedor", codigo, dados_orc, colunas_orc):
-        st.success("Orçamento atualizado!")
-        st.session_state["modo_edicao"] = False            
-            
+        sucesso = atualizar_linha_orcamento(
+            planilha,
+            "orcamentos_revendedor",
+            codigo_orcamento,
+            dados_orc,
+            colunas_orc
+        )
+
+        if sucesso:
+            dados_pdf = {
+                "codigo": codigo_orcamento,
+                "data_emissao": data_emissao_dt.strftime("%d/%m/%Y"),
+                "data_validade": data_validade_dt.strftime("%d/%m/%Y"),
+                "nome_cliente": nome_cliente,
+                "nome_revendedor": nome_revendedor,
+                "conexoes": conexoes,
+                "usuarios": usuarios,
+                "valor_revendedor": formatar_moeda(resultado["custo_revendedor"]),
+                "sugestao_final": formatar_moeda(resultado["valor_cliente"]),
+                "valor_implantacao": formatar_moeda(resultado["implantacao"]),
+            }
+
+            st.session_state["ultimo_resultado"] = {
+                "codigo": codigo_orcamento,
+                "cliente": nome_cliente,
+                "revendedor": nome_revendedor,
+                "emissao": data_emissao_dt.strftime("%d/%m/%Y"),
+                "validade": data_validade_dt.strftime("%d/%m/%Y"),
+                "resultado": resultado,
+                "pdf": gerar_pdf_orcamento(dados_pdf)
+            }
+
+            st.session_state["modo_edicao"] = False
+            st.session_state["codigo_em_edicao"] = None
+            st.success("Orçamento atualizado com sucesso!")
+
 
 if st.session_state["ultimo_resultado"] is not None:
     ult = st.session_state["ultimo_resultado"]
@@ -667,8 +700,6 @@ if st.session_state["ultimo_resultado"] is not None:
 st.markdown("---")
 st.subheader("🔎 Consulta de orçamentos")
 
-
-
 col_f1, col_f2 = st.columns(2)
 with col_f1:
     filtro_revendedor = st.text_input("Filtrar por revendedor")
@@ -686,36 +717,31 @@ df_orc = ler_aba_dataframe(
 )
 
 if not df_orc.empty:
-    
-    
-st.markdown("### ✏️ Editar orçamento")
-
-codigo_editar = st.selectbox(
-    "Selecione o orçamento",
-    df_orc["codigo"].astype(str).tolist()
-)
-
-if st.button("Carregar orçamento"):
-    linha = df_orc[df_orc["codigo"].astype(str) == str(codigo_editar)]
-
-    if not linha.empty:
-        item = linha.iloc[0]
-
-        st.session_state["modo_edicao"] = True
-        st.session_state["codigo_em_edicao"] = item["codigo"]
-
-        st.session_state["nome_cliente"] = item["nome_cliente"]
-        st.session_state["nome_revendedor"] = item["nome_revendedor"]
-        st.session_state["conexoes"] = int(item["conexoes"])
-        st.session_state["usuarios"] = int(item["usuarios"])
-
-        st.success("Orçamento carregado!")
-        st.rerun()
-
-
-
-    
     df_filtrado = df_orc.copy()
+
+    st.markdown("### ✏️ Editar orçamento existente")
+
+    codigos_orcamento = df_orc["codigo"].astype(str).tolist()
+    codigo_editar = st.selectbox(
+        "Selecione o orçamento para editar:",
+        codigos_orcamento,
+        key="select_codigo_editar"
+    )
+
+    linha_edicao = df_orc[df_orc["codigo"].astype(str) == str(codigo_editar)]
+
+    if not linha_edicao.empty:
+        item_edicao = linha_edicao.iloc[0].to_dict()
+
+        st.button(
+            "Carregar orçamento para edição",
+            key="btn_carregar_orcamento_edicao",
+            on_click=carregar_orcamento_para_edicao,
+            args=(item_edicao,),
+        )
+
+    if st.session_state.get("modo_edicao", False):
+        st.warning("Ao carregar um orçamento, marque novamente Instagram/Facebook/Telegram se esse orçamento tiver redes sociais, pois a aba comercial só guarda o valor total dessas redes.")
 
     if filtro_revendedor.strip():
         df_filtrado = df_filtrado[
