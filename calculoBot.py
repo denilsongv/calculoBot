@@ -520,7 +520,7 @@ if calcular:
 
         salvou_orc = salvar_em_aba(
             planilha,
-            "orcamentos_revendedor",
+            "historico_orcamentos",
             dados_orc,
             colunas_orc
         )
