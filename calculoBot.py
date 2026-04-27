@@ -544,7 +544,7 @@ with col_f2:
 
 df_orc = ler_aba_dataframe(
     planilha,
-    "orcamentos_revendedor",
+    "historico_orcamentos",
     [
         "codigo", "data_emissao", "data_validade", "nome_cliente", "nome_revendedor",
         "conexoes", "usuarios", "valor_revendedor", "sugestao_final",
