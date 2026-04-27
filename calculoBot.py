@@ -123,13 +123,16 @@ def carregar_configuracoes():
         return None, None, None
 
 
+
+
+
+
+
+
+
 def garantir_aba(planilha, nome_aba, colunas):
     try:
         aba = planilha.worksheet(nome_aba)
-        valores = aba.get_all_values()
-        if not valores:
-            aba.update("A1", [colunas])
-        return aba
     except Exception:
         aba = planilha.add_worksheet(
             title=nome_aba,
@@ -139,39 +142,92 @@ def garantir_aba(planilha, nome_aba, colunas):
         aba.update("A1", [colunas])
         return aba
 
+    valores = aba.get_all_values()
+
+    if not valores:
+        aba.update("A1", [colunas])
+    else:
+        cabecalho_atual = [str(c).strip() for c in valores[0]]
+        cabecalho_esperado = [str(c).strip() for c in colunas]
+
+        if cabecalho_atual[:len(cabecalho_esperado)] != cabecalho_esperado:
+            aba.update("A1", [colunas])
+
+    return aba
+
 
 def ler_aba_dataframe(planilha, nome_aba, colunas=None):
     try:
-        planilha_atual = conectar_google_sheets()
-        if not planilha_atual:
-            if colunas is not None:
-                return pd.DataFrame(columns=colunas)
-            return pd.DataFrame()
+        if not planilha:
+            return pd.DataFrame(columns=colunas if colunas else [])
 
-        aba = planilha_atual.worksheet(nome_aba)
-        registros = aba.get_all_records()
-        return pd.DataFrame(registros)
+        aba = garantir_aba(planilha, nome_aba, colunas if colunas else [])
+        valores = aba.get_all_values()
+
+        if len(valores) <= 1:
+            return pd.DataFrame(columns=colunas if colunas else [])
+
+        cabecalho = [str(c).strip() for c in valores[0]]
+        linhas = valores[1:]
+
+        dados = []
+        for linha in linhas:
+            linha_ajustada = linha + [""] * (len(cabecalho) - len(linha))
+            dados.append(linha_ajustada[:len(cabecalho)])
+
+        df = pd.DataFrame(dados, columns=cabecalho)
+
+        if colunas:
+            for col in colunas:
+                if col not in df.columns:
+                    df[col] = ""
+
+            df = df[colunas]
+
+        if "codigo" in df.columns:
+            df = df[df["codigo"].astype(str).str.startswith("ORC-", na=False)]
+
+        df = df.dropna(how="all")
+        df = df[df.astype(str).apply(lambda x: "".join(x).strip(), axis=1) != ""]
+
+        return df
 
     except Exception:
-        if colunas is not None:
-            return pd.DataFrame(columns=colunas)
-        return pd.DataFrame()
+        st.error(f"Erro ao ler a aba '{nome_aba}':\n{traceback.format_exc()}")
+        return pd.DataFrame(columns=colunas if colunas else [])
 
 
 def salvar_em_aba(planilha, nome_aba, dados, colunas):
     try:
-        planilha_atual = conectar_google_sheets()
-        if not planilha_atual:
+        if not planilha:
             return False
 
-        aba = garantir_aba(planilha_atual, nome_aba, colunas)
+        aba = garantir_aba(planilha, nome_aba, colunas)
+
         nova_linha = [dados.get(col, "") for col in colunas]
-        aba.append_row(nova_linha)
+
+        aba.append_row(
+            nova_linha,
+            value_input_option="USER_ENTERED"
+        )
+
         return True
 
     except Exception:
         st.error(f"Erro ao salvar em '{nome_aba}':\n{traceback.format_exc()}")
         return False
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def calcular_custo(conexoes, usuarios, redes, meta, config_precos, faixas_implantacao):
@@ -491,16 +547,35 @@ if calcular:
             "valor_implantacao": formatar_moeda(resultado["implantacao"]),
         }
 
-        if salvou_historico and salvou_orc:
-            st.session_state["ultimo_resultado"] = {
-                "codigo": codigo_orcamento,
-                "cliente": nome_cliente,
-                "revendedor": nome_revendedor,
-                "emissao": data_emissao_dt.strftime("%d/%m/%Y"),
-                "validade": data_validade_dt.strftime("%d/%m/%Y"),
-                "resultado": resultado,
-                "pdf": gerar_pdf_orcamento(dados_pdf)
-            }
+
+
+
+
+
+
+
+
+
+    if salvou_historico and salvou_orc:
+        st.session_state["ultimo_resultado"] = {
+            "codigo": codigo_orcamento,
+            "cliente": nome_cliente,
+            "revendedor": nome_revendedor,
+            "emissao": data_emissao_dt.strftime("%d/%m/%Y"),
+            "validade": data_validade_dt.strftime("%d/%m/%Y"),
+            "resultado": resultado,
+            "pdf": gerar_pdf_orcamento(dados_pdf)
+    }
+
+    st.rerun()
+
+
+
+
+
+
+
+
 
 if st.session_state["ultimo_resultado"] is not None:
     ult = st.session_state["ultimo_resultado"]
