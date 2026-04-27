@@ -528,7 +528,7 @@ if calcular:
 
         salvou_historico = salvar_em_aba(
             planilha,
-            "historico_orcamentos",
+            "orcamentos_revendedor",
             dados_historico,
             colunas_historico
         )
