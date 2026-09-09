@@ -77,6 +77,7 @@ def limpar_formulario():
     st.session_state["facebook"] = False
     st.session_state["telegram"] = False
     st.session_state["meta"] = False
+    st.session_state["acrescimo_percentual"] = 10
     st.session_state["ultimo_resultado"] = None
 
 
@@ -230,7 +231,7 @@ def salvar_em_aba(planilha, nome_aba, dados, colunas):
 
 
 
-def calcular_custo(conexoes, usuarios, redes, meta, config_precos, faixas_implantacao):
+def calcular_custo(conexoes, usuarios, redes, meta, config_precos, faixas_implantacao, acrescimo_percentual):
     if conexoes == 1:
         custo_conexoes = config_precos["valor_primeira_conexao"]
     elif 2 <= conexoes <= 5:
@@ -294,6 +295,13 @@ def calcular_custo(conexoes, usuarios, redes, meta, config_precos, faixas_implan
 
     valor_sugerido = custo_total * (1 + config_precos["margem_revendedor"])
     valor_cliente = valor_sugerido + valor_redes_sociais
+
+    # Acréscimo comercial escolhido na interface (10% a 30%).
+    # Ele altera somente os valores finais exibidos/salvos e não aparece no PDF.
+    fator_acrescimo = 1 + (acrescimo_percentual / 100)
+    custo_revendedor *= fator_acrescimo
+    valor_cliente *= fator_acrescimo
+    valor_implantacao *= fator_acrescimo
 
     return {
         "custo_base": custo_total,
@@ -433,6 +441,19 @@ with col_r4:
     meta = st.checkbox("⭐ Meta", key="meta")
 
 st.markdown("---")
+st.subheader("📈 Acréscimo comercial")
+acrescimo_percentual = st.slider(
+    "Percentual de acréscimo:",
+    min_value=10,
+    max_value=30,
+    value=10,
+    step=1,
+    format="%d%%",
+    key="acrescimo_percentual"
+)
+st.caption("Este percentual é usado apenas no cálculo interno e não aparece no PDF do cliente.")
+
+st.markdown("---")
 
 col_btn1, col_btn2 = st.columns(2)
 
@@ -468,7 +489,8 @@ if calcular:
             redes=redes,
             meta=meta,
             config_precos=config_precos,
-            faixas_implantacao=faixas_implantacao
+            faixas_implantacao=faixas_implantacao,
+            acrescimo_percentual=acrescimo_percentual
         )
 
         data_emissao_dt = datetime.now()
